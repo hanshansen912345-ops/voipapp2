@@ -1,0 +1,6 @@
+{
+  "name": "Driver Order App",
+  "description": "A driver application for receiving orders, routing to maps, and messaging customers with an ETA.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": []
+}
