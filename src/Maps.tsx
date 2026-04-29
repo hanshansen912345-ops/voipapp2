@@ -85,21 +85,22 @@ export const OpenRouting = ({ origin, destination }: { origin: {lat: number, lng
         routingControlRef.current = control;
 
         return () => {
-            if (routingControlRef.current && map) {
+            if (routingControlRef.current) {
                 try {
                     const ctrl = routingControlRef.current;
-                    // Extreme defensive check: only remove if map has a container and control thinks it is attached
-                    const mapHasContainer = (map as any)._container;
-                    const isAttached = ctrl._map || (ctrl.getPlan && ctrl.getPlan()._map);
-                    
-                    if (mapHasContainer && isAttached) {
-                        map.removeControl(ctrl);
+                    // Check if map still exists and is not being destroyed
+                    if (map && (map as any)._container) {
+                        const isAttached = ctrl._map || (ctrl.getPlan && ctrl.getPlan()._map);
+                        if (isAttached && typeof map.removeControl === 'function') {
+                            map.removeControl(ctrl);
+                        }
                     }
                 } catch (err) {
                     // Fail silently for cleanup errors to avoid crashing the UI
-                    console.debug('Handled Leaflet cleanup exception:', err);
+                    console.debug('Handled Leaflet routing cleanup exception:', err);
+                } finally {
+                    routingControlRef.current = null;
                 }
-                routingControlRef.current = null;
             }
         };
     }, [map]); // Only create once for this map instance

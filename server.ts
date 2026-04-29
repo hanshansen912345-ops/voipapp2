@@ -186,6 +186,31 @@ async function startServer() {
     res.json(order);
   });
 
+  // API: Update ETA and optionally notify customer
+  app.post('/api/orders/:id/update-eta', async (req, res) => {
+    const order = orders.find(o => o.id === req.params.id);
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+    
+    const { etaMinutes, silent } = req.body;
+    const oldEta = order.etaMinutes;
+    order.etaMinutes = etaMinutes;
+
+    // If change is significant (more than 5 mins) or it was previously null, notify
+    if (!silent && oldEta !== null) {
+        const diff = Math.abs(oldEta - etaMinutes);
+        if (diff >= 5) {
+            const host = req.headers.host || '';
+            const protocol = host.includes('localhost') ? 'http' : 'https';
+            const trackingUrl = `${process.env.APP_URL || (protocol + '://' + host)}/track/${order.id}`;
+            const msg = `Din chauffør er opdateret: Ny anslået ankomst om ca. ${etaMinutes} minutter. Se her: ${trackingUrl}`;
+            await sendSms(order.customerPhone, msg);
+        }
+    }
+
+    broadcastOrders();
+    res.json(order);
+  });
+
   // API: Driver completes order
   app.post('/api/orders/:id/complete', async (req, res) => {
     const order = orders.find(o => o.id === req.params.id);

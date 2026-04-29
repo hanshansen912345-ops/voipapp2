@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 import React, { useState, useEffect } from 'react';
-import { Navigation, Clock, Check, UserIcon, Map as MapIcon, Package, Send, PlusCircle, LayoutDashboard, Truck, X, LogOut } from 'lucide-react';
+import { Navigation, Clock, Check, UserIcon, Map as MapIcon, Package, Send, PlusCircle, LayoutDashboard, Truck, X, LogOut, ChevronDown, ChevronUp, Info, MapPin } from 'lucide-react';
 import { cn } from './lib/utils';
 import { Order } from '../server'; // Import type
 import { format } from 'date-fns';
@@ -290,6 +290,7 @@ function DriverView({ onLogout }: { onLogout: () => void }) {
   const [orders, setOrders] = useState<Order[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [driverLocation, setDriverLocation] = useState<{lat: number, lng: number} | null>(null);
+  const [isDetailsExpanded, setIsDetailsExpanded] = useState(false);
 
   const fetchOrders = async () => {
     try {
@@ -317,18 +318,34 @@ function DriverView({ onLogout }: { onLogout: () => void }) {
   useEffect(() => {
     if (!navigator.geolocation) return;
     
+    // Use high accuracy and short timeout for real-time tracking
     const watchId = navigator.geolocation.watchPosition(
        (pos) => {
-         const { latitude, longitude } = pos.coords;
-         setDriverLocation({ lat: latitude, lng: longitude });
+         const { latitude, longitude, heading, speed } = pos.coords;
+         const newLoc = { lat: latitude, lng: longitude };
+         
+         setDriverLocation(newLoc);
+         
+         // Sync with backend
          fetch('/api/driver/location', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ lat: latitude, lng: longitude })
-         }).catch(err => console.error("Could not sync location"));
+            body: JSON.stringify({ 
+              lat: latitude, 
+              lng: longitude,
+              heading: heading,
+              speed: speed 
+            })
+         }).catch(err => console.debug("Silent location sync failure:", err));
        },
-       (err) => console.warn(err),
-       { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+       (err) => {
+         console.warn("Geolocation error:", err.message);
+       },
+       { 
+         enableHighAccuracy: true, 
+         timeout: 10000, 
+         maximumAge: 0 
+       }
     );
     return () => navigator.geolocation.clearWatch(watchId);
   }, []);
@@ -412,6 +429,33 @@ function DriverView({ onLogout }: { onLogout: () => void }) {
   const pendingOrders = orders.filter(o => o.status === 'pending');
   const activeOrder = orders.find(o => o.status === 'en_route'); // Assume 1 active order at a time for UI clarity
 
+  // Periodic ETA Update Logic
+  useEffect(() => {
+    if (!activeOrder || !driverLocation || !activeOrder.dropoffLatLng) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${driverLocation.lng},${driverLocation.lat};${activeOrder.dropoffLatLng!.lng},${activeOrder.dropoffLatLng!.lat}?overview=false`;
+        const res = await fetch(osrmUrl);
+        const data = await res.json();
+        
+        if (data.routes && data.routes.length > 0) {
+          const newEta = Math.round(data.routes[0].duration / 60);
+          
+          await fetch(`/api/orders/${activeOrder.id}/update-eta`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ etaMinutes: newEta, silent: false })
+          });
+        }
+      } catch (err) {
+        console.error("Failed to update ETA automatically:", err);
+      }
+    }, 180000); // 3 minutes
+
+    return () => clearInterval(interval);
+  }, [activeOrder?.id, driverLocation]);
+
   return (
     <div className="min-h-screen bg-gray-900 flex flex-col font-sans h-screen overflow-hidden">
       {/* Header */}
@@ -434,68 +478,150 @@ function DriverView({ onLogout }: { onLogout: () => void }) {
       {/* Split Screen Layout */}
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
         
-        {/* LEFT PANE: Active Route Map */}
+        {/* LEFT PANE: Map Area */}
         <div className="flex-[2] relative bg-gray-800 flex flex-col">
-           {activeOrder ? (
-              <>
-                 <div className="absolute top-4 left-4 right-4 z-10 flex gap-4">
-                    <div className="bg-gray-900/90 backdrop-blur p-4 rounded-2xl border border-gray-700 shadow-2xl flex-1 flex items-center justify-between">
-                       <div>
-                          <p className="text-[10px] text-emerald-400 font-bold uppercase tracking-wider mb-1">Aktiv Rute. SMS Sendt.</p>
-                          <h2 className="text-white font-bold text-lg">{activeOrder.dropoffAddress}</h2>
-                          <p className="text-gray-400 text-xs mt-1">Leverer: {activeOrder.itemDescription}</p>
-                       </div>
-                       <div className="text-right">
-                          <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider mb-1">Est. Tid (Auto)</p>
-                          <p className="text-3xl text-white font-light">~{activeOrder.etaMinutes}<span className="text-sm text-gray-500 ml-1">m</span></p>
-                       </div>
-                    </div>
-                 </div>
-
-                 <div className="flex-1 bg-gray-700 relative z-0">
-                     <OpenMap center={driverLocation || { lat: 55.676098, lng: 12.568337 }} zoom={14}>
-                       {driverLocation && <OpenMarker position={driverLocation} type="driver" />}
-                       {activeOrder.dropoffLatLng && <OpenMarker position={activeOrder.dropoffLatLng} type="dest" />}
-                       {driverLocation && activeOrder.dropoffLatLng && (
-                           <OpenRouting origin={driverLocation} destination={activeOrder.dropoffLatLng} />
+            <div className="flex-1 bg-gray-700 relative z-0">
+                <OpenMap center={driverLocation || { lat: 55.676098, lng: 12.568337 }} zoom={14}>
+                  {driverLocation && <OpenMarker position={driverLocation} type="driver" />}
+                  {activeOrder && activeOrder.dropoffLatLng && (
+                      <>
+                        <OpenMarker position={activeOrder.dropoffLatLng} type="dest" />
+                        {driverLocation && (
+                          <OpenRouting origin={driverLocation} destination={activeOrder.dropoffLatLng} />
                         )}
-                      </OpenMap>
-                  </div>
+                      </>
+                  )}
+                </OpenMap>
 
-                  <div className="bg-gray-900 p-4 border-t border-gray-800 shrink-0">
-                    <div className="flex flex-col gap-3">
-                       <div className="grid grid-cols-2 gap-3">
-                          <button onClick={() => handleNotifyTwoMin(activeOrder.id)} disabled={isLoading || activeOrder.driverNotifiedTwoMin}
-                                  className="bg-blue-600 text-white text-sm font-bold py-3 rounded-xl border border-blue-500 hover:bg-blue-500 transition shadow-[0_0_15px_rgba(37,99,235,0.2)] disabled:opacity-50 disabled:bg-gray-700 disabled:border-gray-600 disabled:shadow-none flex items-center justify-center gap-2">
-                             <Clock className="w-4 h-4" /> {activeOrder.driverNotifiedTwoMin ? '2-min SMS Sendt' : 'Send 2-min SMS'}
-                          </button>
-                          <button onClick={() => handleResendTracking(activeOrder.id)} disabled={isLoading}
-                                  className="bg-gray-800 text-white text-sm font-bold py-3 rounded-xl border border-gray-700 hover:bg-gray-700 transition flex items-center justify-center gap-2">
-                             <Send className="w-4 h-4" /> Gensend Tracking link
-                          </button>
+                {/* Status Overlay when en route */}
+                {activeOrder && (
+                  <div className="absolute top-4 left-4 right-4 z-10 flex flex-col gap-2">
+                    <div className="bg-gray-900/95 backdrop-blur-md p-5 rounded-2xl border border-gray-700 shadow-2xl flex items-center justify-between">
+                       <div className="flex-1">
+                          <div className="flex items-center gap-2 mb-1">
+                             <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+                             <p className="text-[10px] text-emerald-400 font-bold uppercase tracking-widest text-wrap">Aktiv Levering</p>
+                          </div>
+                          <h2 className="text-white font-bold text-lg leading-tight truncate max-w-[200px] sm:max-w-none">{activeOrder.dropoffAddress}</h2>
+                          <p className="text-gray-400 text-xs mt-1 font-medium truncate">{activeOrder.itemDescription}</p>
                        </div>
-                       <div className="flex gap-4">
-                          <button onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(activeOrder.dropoffAddress)}`, '_blank')}
-                                  className="flex-1 bg-gray-800 text-white font-bold py-4 rounded-xl border border-gray-700 hover:bg-gray-700 transition flex items-center justify-center gap-2">
-                             <Navigation className="w-5 h-5" /> Åbn Nativ GPS
-                          </button>
-                          <button onClick={() => handleCompleteOrder(activeOrder.id)} disabled={isLoading}
-                                  className="flex-1 bg-emerald-600 text-white font-bold py-4 rounded-xl hover:bg-emerald-500 transition shadow-[0_0_20px_rgba(16,185,129,0.2)] disabled:opacity-50 flex items-center justify-center gap-2">
-                             <Check className="w-5 h-5" /> Afslut Ordre (Leveret)
-                          </button>
+                       <div className="text-right pl-4 border-l border-gray-800 ml-4">
+                          <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider mb-1">Ankomst</p>
+                          <p className="text-3xl text-white font-light tabular-nums leading-none">
+                             {activeOrder.etaMinutes}<span className="text-sm text-gray-500 ml-0.5">m</span>
+                          </p>
                        </div>
                     </div>
+
+                    {/* Expandable Order Details Section */}
+                    <div className="bg-gray-900/95 backdrop-blur-md rounded-2xl border border-gray-700 shadow-xl overflow-hidden transition-all duration-300 ease-in-out">
+                       <button 
+                        onClick={() => setIsDetailsExpanded(!isDetailsExpanded)}
+                        className="w-full px-5 py-4 flex items-center justify-between text-gray-400 hover:text-white transition-colors"
+                       >
+                         <div className="flex items-center gap-2">
+                           <div className="w-1.5 h-1.5 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.6)]"></div>
+                           <span className="text-xs font-bold uppercase tracking-[0.15em] text-gray-300">Ordredetaljer</span>
+                         </div>
+                         <div className="flex items-center gap-2">
+                           <span className="text-[10px] font-medium text-gray-500 uppercase tracking-wider">{isDetailsExpanded ? 'Skjul' : 'Vis mere'}</span>
+                           {isDetailsExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                         </div>
+                       </button>
+
+                       {isDetailsExpanded && (
+                         <div className="px-6 pb-6 pt-2 space-y-6 border-t border-gray-800 animate-in fade-in slide-in-from-top-2 duration-300">
+                           <div className="grid grid-cols-2 gap-6">
+                             <div>
+                               <p className="text-[9px] text-gray-500 font-bold uppercase tracking-widest mb-2">Modtager</p>
+                               <div className="flex items-center gap-3">
+                                 <div className="w-10 h-10 bg-gray-800 rounded-xl flex items-center justify-center border border-gray-700">
+                                   <UserIcon className="w-5 h-5 text-emerald-400" />
+                                 </div>
+                                 <div className="overflow-hidden">
+                                   <p className="text-white font-bold text-sm truncate">{activeOrder.customerName}</p>
+                                   <p className="text-gray-500 text-xs font-medium">{activeOrder.customerPhone || 'Ingen telefon'}</p>
+                                 </div>
+                               </div>
+                             </div>
+                             <div>
+                               <p className="text-[9px] text-gray-500 font-bold uppercase tracking-widest mb-2">Forsendelse</p>
+                               <div className="flex items-start gap-2">
+                                  <Package className="w-4 h-4 text-blue-400 mt-0.5 shrink-0" />
+                                  <p className="text-white text-sm font-medium leading-snug">{activeOrder.itemDescription}</p>
+                               </div>
+                             </div>
+                           </div>
+                           
+                           <div className="bg-gray-800/50 rounded-2xl p-4 border border-gray-800 space-y-4">
+                             <div className="flex gap-4">
+                               <div className="flex flex-col items-center pt-1">
+                                 <div className="w-3 h-3 rounded-full border-2 border-emerald-500 bg-gray-900"></div>
+                                 <div className="w-px h-full bg-gray-700 my-1 border-dashed border-l"></div>
+                               </div>
+                               <div className="flex-1">
+                                 <p className="text-[9px] text-gray-500 font-bold uppercase tracking-wider mb-0.5">Afhentning</p>
+                                 <p className="text-gray-200 text-xs font-semibold leading-relaxed">{activeOrder.pickupAddress}</p>
+                               </div>
+                             </div>
+                             <div className="flex gap-4">
+                               <div className="flex flex-col items-center pt-1">
+                                 <MapPin className="w-3.5 h-3.5 text-blue-500" />
+                               </div>
+                               <div className="flex-1">
+                                 <p className="text-[9px] text-gray-500 font-bold uppercase tracking-wider mb-0.5">Leveringsadresse</p>
+                                 <p className="text-white text-xs font-bold leading-relaxed">{activeOrder.dropoffAddress}</p>
+                               </div>
+                             </div>
+                           </div>
+                         </div>
+                       )}
+                    </div>
                   </div>
-              </>
-           ) : (
-              <div className="flex-1 flex flex-col items-center justify-center text-center p-8">
-                 <div className="w-20 h-20 bg-gray-800 rounded-full flex items-center justify-center mb-4">
-                    <Navigation className="w-8 h-8 text-gray-600" />
-                 </div>
-                 <h2 className="text-white font-bold text-xl mb-2">Ingen Aktiv Rute</h2>
-                 <p className="text-gray-400 text-sm max-w-xs">Accepter en indkommende ordre fra panelet for at starte navigation og sende ankomsttid til kunden.</p>
+                )}
+
+                {/* Legend or Quick Info */}
+                {!activeOrder && (
+                  <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-10">
+                    <div className="bg-gray-900/80 backdrop-blur px-6 py-3 rounded-full border border-gray-700 shadow-xl text-white text-sm font-medium flex items-center gap-3">
+                      <div className="flex items-center gap-1.5">
+                        <div className="w-2.5 h-2.5 rounded-full bg-emerald-500"></div>
+                        <span>Din position</span>
+                      </div>
+                      <div className="w-px h-4 bg-gray-700"></div>
+                      <p className="text-gray-400">Afventer næste ordre...</p>
+                    </div>
+                  </div>
+                )}
+            </div>
+
+            {/* Action Bar for Active Order */}
+            {activeOrder && (
+              <div className="bg-gray-900 p-5 border-t border-gray-800 shrink-0">
+                <div className="flex flex-col gap-4">
+                   <div className="grid grid-cols-2 gap-3">
+                      <button onClick={() => handleNotifyTwoMin(activeOrder.id)} disabled={isLoading || activeOrder.driverNotifiedTwoMin}
+                              className="bg-blue-600 text-white text-sm font-bold py-3.5 rounded-xl border border-blue-500 hover:bg-blue-500 transition shadow-[0_0_15px_rgba(37,99,235,0.2)] disabled:opacity-50 disabled:bg-gray-700 disabled:border-gray-600 disabled:shadow-none flex items-center justify-center gap-2">
+                         <Clock className="w-4 h-4" /> {activeOrder.driverNotifiedTwoMin ? 'SMS Sendt' : 'Send 2-min SMS'}
+                      </button>
+                      <button onClick={() => handleResendTracking(activeOrder.id)} disabled={isLoading}
+                              className="bg-gray-800 text-white text-sm font-bold py-3.5 rounded-xl border border-gray-700 hover:bg-gray-700 transition flex items-center justify-center gap-2">
+                         <Send className="w-4 h-4" /> Tracking Link
+                      </button>
+                   </div>
+                   <div className="flex gap-4">
+                      <button onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(activeOrder.dropoffAddress)}`, '_blank')}
+                              className="flex-1 bg-gray-800 text-white font-bold py-4 rounded-xl border border-gray-700 hover:bg-gray-700 transition flex items-center justify-center gap-3">
+                         <Navigation className="w-5 h-5 text-blue-400" /> Nativ GPS
+                      </button>
+                      <button onClick={() => handleCompleteOrder(activeOrder.id)} disabled={isLoading}
+                              className="flex-1 bg-emerald-600 text-white font-bold py-4 rounded-xl hover:bg-emerald-500 transition shadow-[0_0_20px_rgba(16,185,129,0.2)] disabled:opacity-50 flex items-center justify-center gap-3">
+                         <Check className="w-5 h-5" /> Leveret
+                      </button>
+                   </div>
+                </div>
               </div>
-           )}
+            )}
         </div>
 
         {/* RIGHT PANE: Incoming Orders */}
